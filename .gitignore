@@ -51,6 +51,7 @@ android/.kotlin/
 **/android/captures/
 **/android/gradlew
 **/android/gradlew.bat
+**/android/gradle/wrapper/gradle-wrapper.jar
 **/android/local.properties
 **/android/**/GeneratedPluginRegistrant.java
 
