@@ -294,6 +294,21 @@ class RemoteHostConnector {
   /// comportamento novo até ser reinstalado.
   static const _remoteIdleSeconds = 120;
   Future<void> _installAndStartServer() async {
+    // O push (`mkdir -p`/`chmod +x`/`cat >`) assume shell POSIX no host
+    // remoto — bootstrap só faz sentido cliente POSIX → host POSIX (o
+    // cenário original do plano 58: Mac→Mac, VPS Linux). No Windows, o
+    // binário local É um .exe: empurrá-lo pra um host remoto POSIX (ex.:
+    // WSL2) não roda lá — na melhor das hipóteses falha alto, na pior
+    // (via interop tipo WSL) SOBRESCREVE um servidor Linux/macOS que já
+    // funcionava com um binário incompatível, incidente real já visto.
+    // Mesma decisão do mobile (plano 59, decisão D): cliente que não pode
+    // garantir compatibilidade não instala — falha com erro claro.
+    if (Platform.isWindows) {
+      throw const RemoteHostException(
+        RemoteHostErrorKind.serverInstallFailed,
+        'windows_client_no_bootstrap',
+      );
+    }
     final binary = localServerBinaryResolver();
     if (binary == null) {
       throw const RemoteHostException(
