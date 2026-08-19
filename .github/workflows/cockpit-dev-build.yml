@@ -1,0 +1,86 @@
+# Build de DEV do Cockpit pra macOS, sem assinatura/notarização.
+#
+# Existe porque o workflow oficial (cockpit-release.yml) exige o certificado
+# Developer ID + credenciais de notarização do mantenedor original, que não
+# existem neste fork (secrets nunca são herdados por forks). Este workflow
+# gera um .app/.dmg funcional pra uso local — sem Gatekeeper feliz (primeira
+# abertura precisa de "clique direito > Abrir" ou `xattr -cr`), mas sem
+# precisar de conta Apple Developer nenhuma.
+#
+# Uso: Actions -> "cockpit dev build (unsigned)" -> Run workflow -> baixa o
+# artefato "cockpit-dev-macos-arm64" ao final.
+
+name: cockpit-dev-build
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch/commit a buildar"
+        required: false
+        default: "main"
+
+jobs:
+  build:
+    name: macOS (arm64, sem assinatura)
+    runs-on: macos-14
+    defaults:
+      run:
+        working-directory: cockpit
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.44.4"
+          channel: stable
+          cache: true
+
+      # Zig 0.16.0 EXATO — o hook de build do libghostty exige essa versão
+      # (minimum_zig_version do ghostty); 0.15.x falha.
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      # A CLI interna (cockpit/cli, crate Rust) é compilada por um Run Script
+      # phase do Xcode durante o build do app.
+      - name: Rust
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update || true
+          rustup default stable
+          cargo --version
+
+      - name: flutter pub get
+        run: flutter pub get
+
+      # A config Release do target Runner usa CODE_SIGN_STYLE = Automatic sem
+      # DEVELOPMENT_TEAM (diferente da config Debug, que tem o Developer ID do
+      # mantenedor original hardcoded) — builda "Sign to Run Locally" sem
+      # precisar de nenhuma conta Apple. Por isso --release aqui, não --debug.
+      - name: flutter build macos --release
+        run: flutter build macos --release
+
+      - name: Empacota .dmg (sem assinar)
+        run: |
+          APP="build/macos/Build/Products/Release/Cockpit.app"
+          test -d "$APP" || {
+            echo "::error::app não encontrado em $APP"
+            ls -la build/macos/Build/Products/Release/ || true
+            exit 1
+          }
+          STAGE=$(mktemp -d)
+          cp -R "$APP" "$STAGE/"
+          ln -s /Applications "$STAGE/Applications"
+          mkdir -p dist
+          hdiutil create -volname "Remote Pi Cockpit (dev)" -srcfolder "$STAGE" \
+            -ov -format UDZO "dist/Cockpit-dev-macos-arm64.dmg"
+          rm -rf "$STAGE"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cockpit-dev-macos-arm64
+          path: cockpit/dist/*.dmg
+          retention-days: 14
+          if-no-files-found: error
