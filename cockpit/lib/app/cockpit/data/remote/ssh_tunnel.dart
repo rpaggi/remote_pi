@@ -41,9 +41,17 @@ class SshTunnel {
     String remoteSocketPath = r'$HOME/.cockpit/cockpit-server.sock',
     Duration timeout = const Duration(seconds: 15),
   }) async {
-    final localPath =
-        '${Directory.systemTemp.path}/cockpit-ssh-'
-        '${DateTime.now().microsecondsSinceEpoch}.sock';
+    // No Windows, `Directory.systemTemp.path` começa com letra de drive + ':'
+    // (ex: `C:\Users\...\Temp`), que colide com o separador `local:remoto` do
+    // `-L` (streamlocal) — o ssh lê o ':' do drive como separador e recusa
+    // com "Bad local forwarding specification". Path local ABSOLUTO segue
+    // guardado em [localPath] (é o que o resto do código usa pra conectar de
+    // verdade); só o argumento passado ao `-L` usa o nome relativo + `cwd` no
+    // tempdir, sem ':' nenhum.
+    final tempDir = Directory.systemTemp.path;
+    final localFileName =
+        'cockpit-ssh-${DateTime.now().microsecondsSinceEpoch}.sock';
+    final localPath = '$tempDir${Platform.pathSeparator}$localFileName';
 
     final askpass = await _Askpass.create(password);
     final authOpts = _authOpts(port: port, usingPassword: password != null);
@@ -84,9 +92,12 @@ class SshTunnel {
         '-o', 'ServerAliveInterval=10',
         '-o', 'ServerAliveCountMax=3',
         '-o', 'StreamLocalBindUnlink=yes',
-        '-L', '$localPath:$resolvedRemote',
+        '-L',
+        Platform.isWindows
+            ? '$localFileName:$resolvedRemote'
+            : '$localPath:$resolvedRemote',
         target,
-      ], environment: askpass?.env);
+      ], environment: askpass?.env, workingDirectory: tempDir);
 
       final stderrBuffer = StringBuffer();
       process.stderr.transform(utf8.decoder).listen(stderrBuffer.write);
