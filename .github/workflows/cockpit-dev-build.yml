@@ -1,14 +1,18 @@
-# Build de DEV do Cockpit pra macOS, sem assinatura/notarização.
+# Build de DEV do Cockpit pra macOS e Windows, sem assinatura/notarização.
 #
-# Existe porque o workflow oficial (cockpit-release.yml) exige o certificado
-# Developer ID + credenciais de notarização do mantenedor original, que não
-# existem neste fork (secrets nunca são herdados por forks). Este workflow
-# gera um .app/.dmg funcional pra uso local — sem Gatekeeper feliz (primeira
-# abertura precisa de "clique direito > Abrir" ou `xattr -cr`), mas sem
-# precisar de conta Apple Developer nenhuma.
+# macOS: existe porque o workflow oficial (cockpit-release.yml) exige o
+# certificado Developer ID + credenciais de notarização do mantenedor
+# original, que não existem neste fork (secrets nunca são herdados por
+# forks). Este job gera um .app/.dmg funcional pra uso local — sem
+# Gatekeeper feliz (primeira abertura precisa de "clique direito > Abrir" ou
+# `xattr -cr`), mas sem precisar de conta Apple Developer nenhuma.
 #
-# Uso: Actions -> "cockpit dev build (unsigned)" -> Run workflow -> baixa o
-# artefato "cockpit-dev-macos-arm64" ao final.
+# Windows: o job oficial NÃO usa assinatura/certificado nenhum (só
+# fastforge + Inno Setup, que já vem no runner) — reaproveitado quase
+# igual, só sem a validação de tag/versão do job `meta` do release oficial.
+#
+# Uso: Actions -> "cockpit-dev-build" -> Run workflow -> baixa o artefato
+# (cockpit-dev-macos-arm64 ou cockpit-dev-windows-x64) ao final.
 
 name: cockpit-dev-build
 
@@ -21,7 +25,7 @@ on:
         default: "main"
 
 jobs:
-  build:
+  macos:
     name: macOS (arm64, sem assinatura)
     runs-on: macos-14
     defaults:
@@ -82,5 +86,57 @@ jobs:
         with:
           name: cockpit-dev-macos-arm64
           path: cockpit/dist/*.dmg
+          retention-days: 14
+          if-no-files-found: error
+
+  windows:
+    name: Windows (x64, sem assinatura)
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: cockpit
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.44.4"
+          channel: stable
+          cache: true
+
+      # Mesma versão fixa do job macOS — o hook do libghostty exige 0.16.0.
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Prepara Fastforge e Inno Setup
+        run: |
+          dart pub global activate fastforge
+          echo "C:\\Program Files (x86)\\Inno Setup 6" >> "$GITHUB_PATH"
+
+      - name: Build + empacota (sem assinar)
+        run: |
+          flutter pub get
+          flutter build windows --release
+          # Gate do sidecar: sem o bundle do cockpit-server o app cai no
+          # fallback in-process silenciosamente (mesmo gate do release oficial).
+          SRV="build/windows/x64/runner/Release/cockpit-server-bundle/bin"
+          test -x "$SRV/cockpit-server.exe" || {
+            echo "::error::cockpit-server.exe ausente do bundle Windows"; exit 1; }
+          test -f "$SRV/cockpit_pty.dll" || {
+            echo "::error::cockpit_pty.dll ausente do bundle do servidor"; exit 1; }
+          dart pub global run fastforge:main package --platform windows --targets exe
+          EXE=$(find dist -name "*.exe" | head -1)
+          test -n "$EXE"
+          mkdir -p out
+          mv "$EXE" "out/RemotePiCockpit-Setup-dev-windows-x64.exe"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cockpit-dev-windows-x64
+          path: cockpit/out/*.exe
           retention-days: 14
           if-no-files-found: error
