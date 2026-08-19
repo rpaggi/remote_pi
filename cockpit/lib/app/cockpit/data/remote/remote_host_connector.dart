@@ -257,8 +257,11 @@ class RemoteHostConnector {
         await Future<void>.delayed(Duration(milliseconds: 100 + i * 50));
       }
       try {
-        return await RemoteConnection.connect(
-          tunnel.localSocketPath,
+        final localPort = tunnel.localPort;
+        return await RemoteConnection.connectOn(
+          localPort != null
+              ? await SocketRemoteDuplex.connectTcp('127.0.0.1', localPort)
+              : await SocketRemoteDuplex.connectUnix(tunnel.localSocketPath!),
           clientName: 'cockpit-gui-ssh',
         );
       } on TerminalException catch (e) {

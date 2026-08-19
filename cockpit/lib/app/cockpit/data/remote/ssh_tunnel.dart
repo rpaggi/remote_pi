@@ -11,12 +11,17 @@ import 'dart:io';
 /// (nunca expõe porta de rede) e este túnel materializa aquele socket num
 /// path local. Pro cliente, o resultado é indistinguível do loopback.
 class SshTunnel {
-  SshTunnel._(this._process, this.localSocketPath, this.target);
+  SshTunnel._(this._process, this.localSocketPath, this.localPort, this.target);
 
   final Process _process;
 
-  /// Socket local que espelha o socket remoto do cockpit-server.
-  final String localSocketPath;
+  /// Socket local (UDS) que espelha o socket remoto — macOS/Linux. `null` no
+  /// Windows, que usa [localPort] em vez disso (ver [open]).
+  final String? localSocketPath;
+
+  /// Porta TCP local (loopback) que espelha o socket remoto — só Windows.
+  /// `null` em macOS/Linux, que usam [localSocketPath].
+  final int? localPort;
   final String target;
 
   final Completer<void> _closed = Completer();
@@ -41,17 +46,23 @@ class SshTunnel {
     String remoteSocketPath = r'$HOME/.cockpit/cockpit-server.sock',
     Duration timeout = const Duration(seconds: 15),
   }) async {
-    // No Windows, `Directory.systemTemp.path` começa com letra de drive + ':'
-    // (ex: `C:\Users\...\Temp`), que colide com o separador `local:remoto` do
-    // `-L` (streamlocal) — o ssh lê o ':' do drive como separador e recusa
-    // com "Bad local forwarding specification". Path local ABSOLUTO segue
-    // guardado em [localPath] (é o que o resto do código usa pra conectar de
-    // verdade); só o argumento passado ao `-L` usa o nome relativo + `cwd` no
-    // tempdir, sem ':' nenhum.
-    final tempDir = Directory.systemTemp.path;
-    final localFileName =
-        'cockpit-ssh-${DateTime.now().microsecondsSinceEpoch}.sock';
-    final localPath = '$tempDir${Platform.pathSeparator}$localFileName';
+    // Win32-OpenSSH não suporta forward pra um socket Unix LOCAL de forma
+    // confiável (bugs conhecidos do streamlocal local no Windows — nem
+    // resolvendo a colisão do ':' da letra de drive com o separador do `-L`,
+    // o bind local falha). Windows usa uma porta TCP loopback como ponta
+    // local em vez de um arquivo de socket: `-L 127.0.0.1:<porta>:<remoto>`
+    // é o modo "TCP local → socket Unix remoto", documentado e suportado.
+    String? localPath;
+    int? localPort;
+    if (Platform.isWindows) {
+      final probe = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+      localPort = probe.port;
+      await probe.close();
+    } else {
+      localPath =
+          '${Directory.systemTemp.path}/cockpit-ssh-'
+          '${DateTime.now().microsecondsSinceEpoch}.sock';
+    }
 
     final askpass = await _Askpass.create(password);
     final authOpts = _authOpts(port: port, usingPassword: password != null);
@@ -93,28 +104,48 @@ class SshTunnel {
         '-o', 'ServerAliveCountMax=3',
         '-o', 'StreamLocalBindUnlink=yes',
         '-L',
-        Platform.isWindows
-            ? '$localFileName:$resolvedRemote'
+        localPort != null
+            ? '127.0.0.1:$localPort:$resolvedRemote'
             : '$localPath:$resolvedRemote',
         target,
-      ], environment: askpass?.env, workingDirectory: tempDir);
+      ], environment: askpass?.env);
 
       final stderrBuffer = StringBuffer();
       process.stderr.transform(utf8.decoder).listen(stderrBuffer.write);
       unawaited(process.stdout.drain<void>());
 
-      final tunnel = SshTunnel._(process, localPath, target);
+      final tunnel = SshTunnel._(process, localPath, localPort, target);
       unawaited(
         process.exitCode.then((_) {
           if (!tunnel._closed.isCompleted) tunnel._closed.complete();
         }),
       );
 
-      // Pronto = socket local existe E o ssh não morreu. Não dá pra "testar"
-      // conectando aqui: o forward UDS só valida o lado remoto na 1ª conexão
-      // de verdade, então erros de destino aparecem na conexão do protocolo.
+      // Pronto = ponta local alcançável E o ssh não morreu. Não dá pra
+      // "testar" o protocolo aqui: o forward só valida o lado remoto na 1ª
+      // conexão de verdade, então erros de destino aparecem na conexão
+      // seguinte. No Windows a ponta é uma porta TCP (tenta conectar de
+      // verdade — não existe "arquivo" pra checar); fora do Windows segue
+      // checando a existência do arquivo do socket Unix.
       final deadline = DateTime.now().add(timeout);
-      while (!File(localPath).existsSync()) {
+      Future<bool> localEndpointReady() async {
+        if (localPort != null) {
+          try {
+            final probe = await Socket.connect(
+              InternetAddress.loopbackIPv4,
+              localPort,
+              timeout: const Duration(milliseconds: 200),
+            );
+            probe.destroy();
+            return true;
+          } catch (_) {
+            return false;
+          }
+        }
+        return File(localPath!).existsSync();
+      }
+
+      while (!await localEndpointReady()) {
         if (tunnel._closed.isCompleted) {
           throw SshTunnelException(stderrBuffer.toString().trim());
         }
@@ -193,8 +224,10 @@ class SshTunnel {
   Future<void> close() async {
     _process.kill();
     await _closed.future;
+    final path = localSocketPath;
+    if (path == null) return; // Windows: porta TCP, nada pra apagar no disco.
     try {
-      File(localSocketPath).deleteSync();
+      File(path).deleteSync();
     } catch (_) {
       // já removido.
     }

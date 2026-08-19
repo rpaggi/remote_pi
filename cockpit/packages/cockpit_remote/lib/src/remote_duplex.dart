@@ -33,6 +33,15 @@ class SocketRemoteDuplex implements RemoteDuplex {
     return SocketRemoteDuplex(socket);
   }
 
+  /// Conecta a uma porta TCP loopback e devolve o duplex pronto — usado no
+  /// Windows, onde o túnel `ssh -L` do desktop encaminha pra uma porta TCP
+  /// local em vez de um socket Unix (Win32-OpenSSH não suporta bind local
+  /// em socket Unix de forma confiável).
+  static Future<SocketRemoteDuplex> connectTcp(String host, int port) async {
+    final socket = await Socket.connect(host, port);
+    return SocketRemoteDuplex(socket);
+  }
+
   @override
   Stream<Uint8List> get input => _socket;
 
