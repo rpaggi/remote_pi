@@ -211,6 +211,16 @@ FFI_PLUGIN_EXPORT PtyHandle *pty_create(PtyOptions *options)
         {
             perror("execvp");
         }
+
+        // execvp só retorna em falha. Sem isto, o processo FILHO (fork()
+        // não duplica as outras threads — só a chamadora) segue caindo no
+        // código abaixo, que faz malloc/pthread_create/pthread_mutex_init:
+        // undefined behavior clássico de "fork numa VM multithread" (mutex
+        // interno que outra thread segurava no pai fica travado pra sempre
+        // no filho). Foi a causa real de um SIGSEGV do cockpit-server em
+        // produção quando um perfil de terminal do CLIENTE (Windows) foi
+        // mandado literal pro host remoto (Linux) e o execvp falhou.
+        _exit(127);
     }
 
     PtyHandle *handle = (PtyHandle *)malloc(sizeof(PtyHandle));

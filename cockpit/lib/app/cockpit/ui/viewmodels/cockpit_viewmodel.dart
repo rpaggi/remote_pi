@@ -4623,12 +4623,25 @@ class CockpitViewModel extends ChangeNotifier {
     TerminalProfile? profile,
     TerminalEngine? engine,
   }) {
+    // `defaultTerminalProfile` é o padrão do SO do CLIENTE (ex.: PowerShell no
+    // Windows) — faz sentido pra terminal LOCAL, mas um host remoto pode ser
+    // outro SO inteiramente. Sem essa checagem, o executável do perfil do
+    // cliente (ex.: `powershell.exe`) era enviado literal pro host remoto,
+    // que falhava o `execvp` tentando achar um binário Windows no Linux.
+    final isRemote = _projectById(projectId)?.isRemoteTerminal ?? false;
+    final effectiveDefault = isRemote
+        ? const TerminalProfile(
+            id: TerminalProfile.loginShellId,
+            label: 'Login shell',
+            executable: '',
+          )
+        : defaultTerminalProfile;
     final t = TerminalSession(
       id: id,
       projectId: projectId,
       workingDirectory: cwd,
       gateway: _gatewayForProject(projectId),
-      profile: profile ?? defaultTerminalProfile,
+      profile: profile ?? effectiveDefault,
       engine: engine ?? _defaultTerminalEngine,
       title: title,
       // Persistência do scrollback: grava a saída pra replay no próximo boot.
