@@ -6,7 +6,9 @@ import 'package:cockpit/app/core/terminal/xterm/xterm.dart' as xterm;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flterm/flterm.dart' as ghost;
-import 'package:libghostty/libghostty.dart' show FormatterFormat;
+import 'package:libghostty/libghostty.dart'
+    show ClipboardWrite, ClipboardWriteResult, FormatterFormat;
+import 'package:pasteboard/pasteboard.dart';
 
 typedef TerminalResizeCallback = void Function(int columns, int rows);
 
@@ -105,6 +107,26 @@ final class GhosttyTerminalController implements CockpitTerminalController {
     };
     controller.onResize = _handleControllerResize;
     controller.onTitleChanged = () => onTitleChanged?.call(controller.title);
+    // Cópia via OSC 52 (ex.: `claude`/tmux/vim "yank pra fora"): sem isto o
+    // ghostty decodifica a sequência e descarta — ninguém escutava o evento,
+    // então programas que copiam programaticamente (em vez de seleção manual
+    // + `copySelection()`) pareciam simplesmente não copiar nada. Achado
+    // testando `claude` num terminal remoto.
+    controller.onClipboardWrite = _handleClipboardWrite;
+  }
+
+  ClipboardWriteResult _handleClipboardWrite(ClipboardWrite write) {
+    if (write.contents.isEmpty) {
+      // Lista vazia = pedido pra limpar o clipboard (ver doc de ClipboardWrite).
+      Pasteboard.writeText('');
+      return ClipboardWriteResult.success;
+    }
+    for (final content in write.contents) {
+      if (content.mime != 'text/plain') continue;
+      Pasteboard.writeText(utf8.decode(content.data, allowMalformed: true));
+      return ClipboardWriteResult.success;
+    }
+    return ClipboardWriteResult.unsupported;
   }
 
   void _handleControllerResize(int columns, int rows) {
