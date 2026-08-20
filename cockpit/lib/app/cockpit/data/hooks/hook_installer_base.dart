@@ -49,13 +49,39 @@ abstract class HookInstallerBase implements HookInstaller {
   /// nessa plataforma. `null` = nenhum dos dois disponível.
   Future<String?> resolveHookCommand(String? cliPath) async {
     if (cliPath != null && await _cliHandlesHook(cliPath)) {
-      return '${shellQuote(cliPath)} hook';
+      return _harnessCommand(cliPath, 'hook');
     }
     final name = Platform.isWindows ? 'cockpit-hook.exe' : 'cockpit-hook';
     final dir = cockpitHookDir();
     if (dir == null) return null;
     final legacy = await _materialize(dir, bundledName: name, destName: name);
-    return legacy == null ? null : shellQuote(legacy);
+    return legacy == null ? null : _harnessCommand(legacy, null);
+  }
+
+  /// Monta o comando final do hook a partir do caminho materializado
+  /// ([exePath], já em forward-slashes via [hookPath]) e do argumento
+  /// opcional.
+  ///
+  /// No Windows, o mesmo `settings.json`/`hooks.json` pode acabar sendo lido
+  /// por dois shells diferentes: o Git Bash que o harness usa rodando nativo
+  /// no Windows (entende `C:/...`), e o `/bin/sh` de uma sessão WSL quando o
+  /// usuário abre o harness de dentro da distro apontando pra uma pasta do
+  /// Windows montada — nesse caso o mesmo arquivo físico
+  /// (`C:\Users\...\.claude\settings.json`) é lido como config de projeto
+  /// pela sessão WSL, cujo `/bin/sh` não entende letra de unidade e precisa
+  /// de `/mnt/c/...`. Como não dá pra saber em qual dos dois o comando vai
+  /// rodar no momento da instalação (é o mesmo instalador Windows nos dois
+  /// casos), o comando decide sozinho em tempo de execução: se existe
+  /// `wslpath` no PATH (só existe dentro do WSL) traduz o caminho Windows
+  /// pro caminho WSL e executa por ali; senão usa o caminho Windows original.
+  /// `wslpath` aceita o caminho já em forward-slash sem problema.
+  String _harnessCommand(String exePath, String? arg) {
+    final quotedWin = shellQuote(exePath);
+    final suffix = arg == null ? '' : ' $arg';
+    if (!Platform.isWindows) return '$quotedWin$suffix';
+    return "if command -v wslpath >/dev/null 2>&1; then "
+        'exec "\$(wslpath \'$exePath\')"$suffix; '
+        'else exec $quotedWin$suffix; fi';
   }
 
   /// `true` quando a CLI materializada tem o subcomando `hook`.
