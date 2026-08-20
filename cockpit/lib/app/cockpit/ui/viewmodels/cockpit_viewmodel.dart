@@ -4661,8 +4661,14 @@ class CockpitViewModel extends ChangeNotifier {
         'COCKPIT_TAB_ID': id,
         'COCKPIT_PANE_ID': id,
         ..._statusServer.hookEnv,
-        // PATH escopado → o binário `cockpit` (CLI interna) resolve só nas abas.
-        ..._cliPathEnv(),
+        // PATH escopado → o binário `cockpit` (CLI interna) resolve só nas
+        // abas. `_cliPathEnv()` lê `Platform.environment['PATH']` do
+        // CLIENTE — certo pra terminal LOCAL, mas pra um workspace REMOTO
+        // isso sobrescrevia o PATH correto do HOST com o PATH cru do
+        // cliente (ex.: `C:\Windows\...` de um cliente Windows), quebrando
+        // coreutils no shell remoto (git/mkdir/rm "not found"). Bug real,
+        // achado testando Windows -> WSL2.
+        if (!isRemote) ..._cliPathEnv(),
       },
     );
     // claude rodando na aba reporta fim de turno via socket → mesma notificação
