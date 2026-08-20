@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:cockpit/app/cockpit/data/remote/remote_host_connector.dart';
@@ -292,8 +291,17 @@ class RemoteHostTerminalGateway implements TerminalGateway {
   /// TERM/COLORTERM como nos outros gateways; o servidor remoto funde por cima
   /// do ambiente dele. Não herda `Platform.environment` local (é outra
   /// máquina) — o env do host vem do próprio servidor.
+  ///
+  /// SEMPRE seta TERM aqui — sem condicionar a `Platform.isWindows`: esse
+  /// `Platform` é o do CLIENTE, mas quem interpreta TERM é o shell do HOST
+  /// remoto (sempre POSIX nesta arquitetura). O guard `!Platform.isWindows`
+  /// existe no gateway LOCAL (ConPTY não quer TERM), mas foi copiado pra cá
+  /// sem ajustar a semântica: um cliente Windows conectando num host Linux
+  /// ficava sem TERM, e o shell remoto não reconhecia as sequências de
+  /// escape de backspace/setas do terminal (libghostty) — bug real, achado
+  /// testando Windows -> WSL2.
   Map<String, String> _terminalEnv(Map<String, String> extraEnv) => {
-    if (!Platform.isWindows) 'TERM': 'xterm-256color',
+    'TERM': 'xterm-256color',
     'COLORTERM': 'truecolor',
     ...extraEnv,
   };
